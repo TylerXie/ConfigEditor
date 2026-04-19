@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ConfigEditor.Tests/ConfigEditor.Tests.csproj" />
+  <Project Path="ConfigEditor/ConfigEditor.csproj" />
+</Solution>
