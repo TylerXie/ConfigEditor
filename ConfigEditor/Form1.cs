@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using Microsoft.Extensions.Configuration;
 
 namespace ConfigEditor
 {
@@ -16,7 +17,11 @@ namespace ConfigEditor
         public Form1()
         {
             InitializeComponent();
-            _databaseService = new ConfigDatabaseService();
+            var configuration = new ConfigurationBuilder()
+                .SetBasePath(AppContext.BaseDirectory)
+                .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+                .Build();
+            _databaseService = new ConfigDatabaseService(configuration);
             InitializeFileMgmtConfigTypes();
             LoadConfigsFromDatabaseAsync();
         }

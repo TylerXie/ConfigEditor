@@ -7,12 +7,31 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
 
 namespace ConfigEditor
 {
     public class ConfigDatabaseService
     {
-        private readonly string _connectionString = "Server=localhost;Database=ConfigTest;Integrated Security=true;TrustServerCertificate=true;";
+        private readonly string _connectionString;
+
+        public ConfigDatabaseService(IConfiguration configuration)
+        {
+            _connectionString = configuration.GetConnectionString("ConfigDatabase") 
+                ?? throw new InvalidOperationException("ConnectionString 'ConfigDatabase' not found in configuration.");
+        }
+
+        public ConfigDatabaseService() : this(CreateDefaultConfiguration())
+        {
+        }
+
+        private static IConfiguration CreateDefaultConfiguration()
+        {
+            return new ConfigurationBuilder()
+                .SetBasePath(AppContext.BaseDirectory)
+                .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+                .Build();
+        }
 
         public async Task<List<GeneralConfig>> LoadConfigsAsync()
         {
