@@ -33,6 +33,191 @@ namespace ConfigEditor
                 .Build();
         }
 
+        /// <summary>
+        /// Load all config items from the database.
+        /// Returns InitialConfig first, followed by all other config items.
+        /// </summary>
+        public async Task<List<BaseConfig>> LoadConfigItemsAsync()
+        {
+            var configs = new List<BaseConfig>();
+
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+
+                    // Query to get all config items, with InitialConfig first
+                    string query = @"
+                        SELECT AppSettingId, AppName, ClassName, Settings 
+                        FROM config_items 
+                        ORDER BY CASE WHEN ClassName = 'InitialConfig' THEN 0 ELSE 1 END, AppSettingId";
+
+                    using (var command = new SqlCommand(query, connection))
+                    {
+                        using (var reader = await command.ExecuteReaderAsync())
+                        {
+                            while (await reader.ReadAsync())
+                            {
+                                int id = reader.GetInt32(0);
+                                string appName = reader.GetString(1);
+                                string className = reader.GetString(2);
+                                string settingsJson = reader.GetString(3);
+
+                                // Deserialize based on class name
+                                BaseConfig config = DeserializeConfigItem(className, settingsJson);
+                                if (config != null)
+                                {
+                                    configs.Add(config);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Ensure InitialConfig exists
+                if (!configs.OfType<InitialConfig>().Any())
+                {
+                    configs.Insert(0, new InitialConfig());
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Error loading configs from database: {ex.Message}", ex);
+            }
+
+            return configs;
+        }
+
+        /// <summary>
+        /// Save a single config item to the database.
+        /// If AppSettingId is 0, a new item is inserted; otherwise, existing item is updated.
+        /// InitialConfig cannot be deleted.
+        /// </summary>
+        public async Task<int> SaveConfigItemAsync(BaseConfig config)
+        {
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+
+                    string settingsJson = SerializeConfigItem(config);
+                    string className = config.GetType().Name;
+
+                    string query = @"
+                        IF EXISTS (SELECT 1 FROM config_items WHERE ClassName = @ClassName AND AppName = @AppName)
+                            UPDATE config_items 
+                            SET Settings = @Settings, ModifiedDate = GETUTCDATE()
+                            WHERE ClassName = @ClassName AND AppName = @AppName
+                        ELSE
+                            INSERT INTO config_items (AppName, ClassName, Settings) 
+                            VALUES (@AppName, @ClassName, @Settings)
+
+                        SELECT SCOPE_IDENTITY()";
+
+                    using (var command = new SqlCommand(query, connection))
+                    {
+                        command.Parameters.AddWithValue("@AppName", config.AppName);
+                        command.Parameters.AddWithValue("@ClassName", className);
+                        command.Parameters.AddWithValue("@Settings", settingsJson);
+
+                        var result = await command.ExecuteScalarAsync();
+                        return result != null ? Convert.ToInt32(result) : 0;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Error saving config item to database: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Delete a config item from the database.
+        /// InitialConfig cannot be deleted.
+        /// </summary>
+        public async Task DeleteConfigItemAsync(BaseConfig config)
+        {
+            // Prevent deletion of InitialConfig
+            if (config is InitialConfig)
+                throw new InvalidOperationException("InitialConfig cannot be deleted.");
+
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+
+                    string query = "DELETE FROM config_items WHERE AppName = @AppName AND ClassName = @ClassName";
+
+                    using (var command = new SqlCommand(query, connection))
+                    {
+                        command.Parameters.AddWithValue("@AppName", config.AppName);
+                        command.Parameters.AddWithValue("@ClassName", config.GetType().Name);
+
+                        await command.ExecuteNonQueryAsync();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Error deleting config item from database: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Deserialize a config item from JSON based on its class name.
+        /// </summary>
+        private BaseConfig DeserializeConfigItem(string className, string settingsJson)
+        {
+            try
+            {
+                var type = Type.GetType($"ConfigEditor.{className}");
+                if (type == null || !typeof(BaseConfig).IsAssignableFrom(type))
+                {
+                    System.Diagnostics.Debug.WriteLine($"DEBUG: Could not resolve type '{className}'");
+                    return null;
+                }
+
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var config = JsonSerializer.Deserialize(settingsJson, type, options) as BaseConfig;
+                return config;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"DEBUG: Error deserializing config item of type '{className}': {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Serialize a config item to JSON.
+        /// </summary>
+        private string SerializeConfigItem(BaseConfig config)
+        {
+            try
+            {
+                var options = new JsonSerializerOptions
+                {
+                    DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+                    WriteIndented = false,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                };
+                return JsonSerializer.Serialize(config, config.GetType(), options);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"DEBUG: Error serializing config item: {ex.Message}");
+                return "{}";
+            }
+        }
+
+        /// <summary>
+        /// For backward compatibility: Load configs in the old GeneralConfig format.
+        /// This method will be deprecated after full UI refactoring.
+        /// </summary>
+        [Obsolete("Use LoadConfigItemsAsync instead. This method will be removed in a future version.")]
         public async Task<List<GeneralConfig>> LoadConfigsAsync()
         {
             var configs = new List<GeneralConfig>();
@@ -53,17 +238,6 @@ namespace ConfigEditor
                             {
                                 var dbMgmtConfigs = DeserializeList<DatabaseMgmtConfig>(reader.GetString(2));
                                 var fileMgmtConfigs = DeserializeList<FileMgmtConfig>(reader.GetString(3));
-
-                                // Debug output
-                                if (fileMgmtConfigs.Count > 0)
-                                {
-                                    var first = fileMgmtConfigs[0];
-                                    System.Diagnostics.Debug.WriteLine($"DEBUG: Loaded FileMgmtConfig - Type: {first.GetType().Name}, FileName: {first.FileName}");
-                                    if (first is CSVFileMgmtConfig csv)
-                                    {
-                                        System.Diagnostics.Debug.WriteLine($"  CodeColumnName: {csv.CodeColumnName}, NameColumnName: {csv.NameColumnName}");
-                                    }
-                                }
 
                                 var config = new GeneralConfig
                                 {
@@ -89,6 +263,7 @@ namespace ConfigEditor
             return configs;
         }
 
+        [Obsolete("Use SaveConfigItemAsync instead. This method will be removed in a future version.")]
         public async Task SaveConfigsAsync(List<GeneralConfig> configs)
         {
             try
@@ -108,7 +283,6 @@ namespace ConfigEditor
                     foreach (var config in configs)
                     {
                         var fileMgmtJson = SerializeList(config.FileMgmtConfigs);
-                        System.Diagnostics.Debug.WriteLine($"DEBUG: Saving FileMgmtConfigs JSON: {fileMgmtJson}");
 
                         string insertQuery = @"INSERT INTO config (AppSection, CustomerName, DatabaseMgmtConfigs, FileMgmtConfigs, AppLoadConfigs, AppWriteConfigs)
                                              VALUES (@AppSection, @CustomerName, @DatabaseMgmtConfigs, @FileMgmtConfigs, @AppLoadConfigs, @AppWriteConfigs)";
@@ -223,8 +397,8 @@ namespace ConfigEditor
                     { 
                         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
                         WriteIndented = false,
-                        PropertyNameCaseInsensitive = false,  // Important: preserve property names as they are in JSON
-                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase  // Use camelCase for consistency
+                        PropertyNameCaseInsensitive = false,
+                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
                     };
                     // Use the actual runtime type to ensure all properties (including derived type properties) are serialized
                     var json = JsonSerializer.Serialize(item, item.GetType(), options);

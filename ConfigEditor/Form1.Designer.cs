@@ -82,7 +82,6 @@
             treeViewConfigs.Size = new Size(306, 486);
             treeViewConfigs.TabIndex = 0;
             treeViewConfigs.AfterSelect += TreeViewConfigs_AfterSelect;
-            treeViewConfigs.NodeMouseDoubleClick += TreeViewConfigs_NodeMouseDoubleClick;
             // 
             // panelButtons
             // 
@@ -135,8 +134,8 @@
             // 
             // panel2
             // 
-            panel2.Controls.Add(labelProperties);
             panel2.Controls.Add(panelPropertiesContainer);
+            panel2.Controls.Add(labelProperties);
             panel2.Dock = DockStyle.Fill;
             panel2.Location = new Point(0, 0);
             panel2.Name = "panel2";

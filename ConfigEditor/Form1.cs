@@ -6,13 +6,11 @@ namespace ConfigEditor
 {
     public partial class Form1 : Form
     {
-        private List<GeneralConfig> _generalConfigs;
+        private List<BaseConfig> _configItems;
         private object _selectedObject;
-        private Dictionary<string, Type> _fileMgmtConfigTypes;
+        private Dictionary<string, Type> _configTypes;
         private ConfigDatabaseService _databaseService;
-        private const string GeneralConfigNodeTag = "GeneralConfig";
-        private const string CollectionNodeTag = "Collection";
-        private const string ItemNodeTag = "Item";
+        private const string ConfigItemNodeTag = "ConfigItem";
 
         public Form1()
         {
@@ -22,21 +20,25 @@ namespace ConfigEditor
                 .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
                 .Build();
             _databaseService = new ConfigDatabaseService(configuration);
-            InitializeFileMgmtConfigTypes();
+            InitializeConfigTypes();
             LoadConfigsFromDatabaseAsync();
         }
 
-        private void InitializeFileMgmtConfigTypes()
+        /// <summary>
+        /// Initialize all config types that can be added to the list.
+        /// Excludes InitialConfig from the list of addable types since it's always present.
+        /// </summary>
+        private void InitializeConfigTypes()
         {
-            _fileMgmtConfigTypes = new Dictionary<string, Type>();
+            _configTypes = new Dictionary<string, Type>();
             var assembly = Assembly.GetExecutingAssembly();
-            var fileMgmtConfigBaseType = typeof(FileMgmtConfig);
 
             foreach (var type in assembly.GetTypes())
             {
-                if (type.IsClass && !type.IsAbstract && fileMgmtConfigBaseType.IsAssignableFrom(type))
+                // Include all BaseConfig-derived types except InitialConfig and abstract types
+                if (type.IsClass && !type.IsAbstract && typeof(BaseConfig).IsAssignableFrom(type) && type != typeof(InitialConfig))
                 {
-                    _fileMgmtConfigTypes[type.Name] = type;
+                    _configTypes[type.Name] = type;
                 }
             }
         }
@@ -45,113 +47,49 @@ namespace ConfigEditor
         {
             try
             {
-                _generalConfigs = await _databaseService.LoadConfigsAsync();
+                _configItems = await _databaseService.LoadConfigItemsAsync();
 
-                if (_generalConfigs == null || _generalConfigs.Count == 0)
+                if (_configItems == null || _configItems.Count == 0)
                 {
-                    LoadSampleData();
+                    _configItems = new List<BaseConfig> { new InitialConfig() };
                 }
 
-                BuildTreeView();
+                BuildListView();
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error loading configs from database:\n{ex.Message}\n\nLoading sample data instead.", "Database Error");
-                LoadSampleData();
-                BuildTreeView();
+                MessageBox.Show($"Error loading configs from database:\n{ex.Message}\n\nLoading default config instead.", "Database Error");
+                _configItems = new List<BaseConfig> { new InitialConfig() };
+                BuildListView();
             }
         }
 
-        private void LoadSampleData()
-        {
-            _generalConfigs = new List<GeneralConfig>
-            {
-                new GeneralConfig
-                {
-                    AppSection = 1,
-                    CustomerName = "Sample Customer 1",
-                    DatabaseMgmtConfigs = new List<DatabaseMgmtConfig>
-                    {
-                        new DatabaseMgmtConfig { AppName = "DB App 1", AppVersion = "1.0" }
-                    },
-                    FileMgmtConfigs = new List<FileMgmtConfig>
-                    {
-                        new TextFileMgmtConfig
-                        {
-                            AppName = "Text File 1",
-                            AppVersion = "1.0",
-                            FileAction = FileMgmtAction.Load,
-                            LoadTime = DateTime.Now,
-                            CodeStart = 0,
-                            CodeEnd = 15,
-                            NameLength = 50
-                        }
-                    },
-                    AppLoadConfigs = new List<AppLoadConfig>(),
-                    AppWriteConfigs = new List<AppWriteConfig>()
-                },
-                new GeneralConfig
-                {
-                    AppSection = 2,
-                    CustomerName = "Sample Customer 2",
-                    DatabaseMgmtConfigs = new List<DatabaseMgmtConfig>(),
-                    FileMgmtConfigs = new List<FileMgmtConfig>(),
-                    AppLoadConfigs = new List<AppLoadConfig>(),
-                    AppWriteConfigs = new List<AppWriteConfig>()
-                }
-            };
-        }
-
-        private void BuildTreeView()
+        private void BuildListView()
         {
             treeViewConfigs.Nodes.Clear();
 
-            // Add all GeneralConfig items to the tree
-            for (int i = 0; i < _generalConfigs.Count; i++)
+            // Add all config items to the tree view as a flat list
+            for (int i = 0; i < _configItems.Count; i++)
             {
-                var config = _generalConfigs[i];
-                var configNode = new TreeNode($"GeneralConfig_{i + 1} - {config.CustomerName}")
+                var config = _configItems[i];
+                bool isInitialConfig = config is InitialConfig;
+                string displayName = $"{config.GetType().Name} - {config.AppName}";
+
+                if (isInitialConfig)
                 {
-                    Tag = new NodeData(GeneralConfigNodeTag, config, typeof(GeneralConfig))
+                    displayName = "📌 " + displayName + " (System)";
+                }
+
+                var configNode = new TreeNode(displayName)
+                {
+                    Tag = new NodeData(ConfigItemNodeTag, config, config.GetType())
                 };
 
-                // Add DatabaseMgmtConfigs collection
-                AddCollectionNode(configNode, "DatabaseMgmtConfigs", config.DatabaseMgmtConfigs, typeof(DatabaseMgmtConfig));
-
-                // Add FileMgmtConfigs collection
-                AddCollectionNode(configNode, "FileMgmtConfigs", config.FileMgmtConfigs, typeof(FileMgmtConfig));
-
-                    // Add AppLoadConfigs collection
-                    AddCollectionNode(configNode, "AppLoadConfigs", config.AppLoadConfigs, typeof(AppLoadConfig));
-
-                    // Add AppWriteConfigs collection
-                    AddCollectionNode(configNode, "AppWriteConfigs", config.AppWriteConfigs, typeof(AppWriteConfig));
-
-                    treeViewConfigs.Nodes.Add(configNode);
-                    configNode.Expand();
-                }
+                treeViewConfigs.Nodes.Add(configNode);
             }
 
-        private void AddCollectionNode(TreeNode parentNode, string collectionName, System.Collections.IList collection, Type itemType)
-        {
-            var collectionNode = new TreeNode($"{collectionName} ({collection.Count})")
-            {
-                Tag = new NodeData(CollectionNodeTag, collection, itemType)
-            };
-
-            if (collection.Count > 0)
-            {
-                foreach (var item in collection)
-                {
-                    var itemNode = new TreeNode(GetNodeDisplayName(item))
-                    {
-                        Tag = new NodeData(ItemNodeTag, item, itemType)
-                    };
-                    collectionNode.Nodes.Add(itemNode);
-                }
-            }
-
-            parentNode.Nodes.Add(collectionNode);
+            // Expand all nodes for better visibility
+            treeViewConfigs.ExpandAll();
         }
 
         private string GetNodeDisplayName(object obj)
@@ -170,23 +108,14 @@ namespace ConfigEditor
 
             _selectedObject = nodeData.Data;
 
-            // Display properties for GeneralConfig items and collection items, but not collection nodes
-            if (nodeData.NodeType == ItemNodeTag || (nodeData.NodeType == GeneralConfigNodeTag && nodeData.Data is GeneralConfig))
+            // Display properties for selected config item
+            if (nodeData.NodeType == ConfigItemNodeTag)
             {
                 DisplayProperties(nodeData.Data);
             }
             else
             {
                 panelPropertiesContainer.Controls.Clear();
-            }
-        }
-
-        private void TreeViewConfigs_NodeMouseDoubleClick(object sender, TreeNodeMouseClickEventArgs e)
-        {
-            if (e.Node.Tag is NodeData nodeData && nodeData.NodeType == ItemNodeTag)
-            {
-                // Item nodes are displayed in properties panel
-                DisplayProperties(nodeData.Data);
             }
         }
 
@@ -200,7 +129,6 @@ namespace ConfigEditor
             var type = obj.GetType();
             var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
                 .Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0)
-                .Where(p => !(p.PropertyType.IsGenericType && p.PropertyType.GetGenericTypeDefinition() == typeof(List<>)))
                 .ToList();
 
             int yPosition = 10;
@@ -227,7 +155,7 @@ namespace ConfigEditor
                 }
                 catch (Exception ex)
                 {
-                    // Skip properties that cause errors
+                    System.Diagnostics.Debug.WriteLine($"Error displaying property {prop.Name}: {ex.Message}");
                 }
             }
         }
@@ -254,7 +182,6 @@ namespace ConfigEditor
                 comboBox.SelectedIndexChanged += (s, e) =>
                 {
                     prop.SetValue(obj, comboBox.SelectedItem);
-                    RefreshTreeView();
                 };
 
                 return comboBox;
@@ -281,7 +208,9 @@ namespace ConfigEditor
                 var numericUpDown = new NumericUpDown
                 {
                     Height = 25,
-                    Value = (int)(currentValue ?? 0)
+                    Value = (int)(currentValue ?? 0),
+                    Minimum = int.MinValue,
+                    Maximum = int.MaxValue
                 };
 
                 numericUpDown.ValueChanged += (s, e) =>
@@ -297,7 +226,8 @@ namespace ConfigEditor
                 var textBox = new TextBox
                 {
                     Height = 25,
-                    Text = (string)(currentValue ?? "")
+                    Text = (string)(currentValue ?? ""),
+                    Multiline = false
                 };
 
                 textBox.TextChanged += (s, e) =>
@@ -318,92 +248,58 @@ namespace ConfigEditor
 
         private void BtnAddItem_Click(object sender, EventArgs e)
         {
-            if (treeViewConfigs.SelectedNode == null)
-            {
-                MessageBox.Show("Please select an item or collection to add to.");
-                return;
-            }
-
-            var selectedNode = treeViewConfigs.SelectedNode;
-            if (selectedNode.Tag is not NodeData nodeData)
-                return;
-
-            // If a GeneralConfig is selected (top-level node with no parent)
-            if (selectedNode.Parent == null && nodeData.NodeType == GeneralConfigNodeTag)
-            {
-                AddNewGeneralConfig();
-                return;
-            }
-
-            // If adding to a collection
-            if (nodeData.NodeType == CollectionNodeTag)
-            {
-                var collection = nodeData.Data as System.Collections.IList;
-                if (collection == null)
-                    return;
-
-                // For FileMgmtConfigs, show dialog to choose subtype
-                if (nodeData.ItemType == typeof(FileMgmtConfig))
-                {
-                    ShowFileMgmtConfigTypeSelection(selectedNode, collection);
-                }
-                else
-                {
-                    AddItemToCollection(selectedNode, collection, nodeData.ItemType);
-                }
-            }
-            else
-            {
-                MessageBox.Show("Please select a collection or GeneralConfig to add items to.");
-            }
+            ShowConfigTypeSelectionDialog();
         }
 
-        private void AddNewGeneralConfig()
-        {
-            var newConfig = new GeneralConfig
-            {
-                AppSection = _generalConfigs.Count + 1,
-                CustomerName = $"Customer_{_generalConfigs.Count + 1}",
-                DatabaseMgmtConfigs = new List<DatabaseMgmtConfig>(),
-                FileMgmtConfigs = new List<FileMgmtConfig>(),
-                AppLoadConfigs = new List<AppLoadConfig>(),
-                AppWriteConfigs = new List<AppWriteConfig>()
-            };
-
-            _generalConfigs.Add(newConfig);
-            BuildTreeView();
-        }
-
-        private void ShowFileMgmtConfigTypeSelection(TreeNode parentNode, System.Collections.IList collection)
+        private void ShowConfigTypeSelectionDialog()
         {
             var form = new Form
             {
-                Text = "Select FileMgmtConfig Type",
-                Width = 300,
-                Height = 200,
+                Text = "Add New Configuration Item",
+                Width = 350,
+                Height = 300,
                 StartPosition = FormStartPosition.CenterParent,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 MaximizeBox = false,
                 MinimizeBox = false
             };
 
+            var label = new Label
+            {
+                Text = "Select a configuration type to add:",
+                Dock = DockStyle.Top,
+                Height = 30,
+                Padding = new Padding(10)
+            };
+
             var listBox = new ListBox
             {
                 Dock = DockStyle.Top,
-                Height = 120
+                Height = 150
             };
 
-            foreach (var typeName in _fileMgmtConfigTypes.Keys.OrderBy(x => x))
+            foreach (var typeName in _configTypes.Keys.OrderBy(x => x))
             {
                 listBox.Items.Add(typeName);
             }
 
+            if (listBox.Items.Count > 0)
+                listBox.SelectedIndex = 0;
+
             var btnOK = new Button
             {
-                Text = "OK",
+                Text = "Add",
                 Dock = DockStyle.Bottom,
                 Height = 30,
                 DialogResult = DialogResult.OK
+            };
+
+            var btnCancel = new Button
+            {
+                Text = "Cancel",
+                Dock = DockStyle.Bottom,
+                Height = 30,
+                DialogResult = DialogResult.Cancel
             };
 
             btnOK.Click += (s, e) =>
@@ -411,103 +307,88 @@ namespace ConfigEditor
                 if (listBox.SelectedItem != null)
                 {
                     var selectedTypeName = listBox.SelectedItem.ToString();
-                    if (_fileMgmtConfigTypes.TryGetValue(selectedTypeName, out var selectedType))
+                    if (_configTypes.TryGetValue(selectedTypeName, out var selectedType))
                     {
-                        AddItemToCollection(parentNode, collection, selectedType);
+                        AddNewConfigItem(selectedType);
                     }
                 }
                 form.Close();
             };
 
+            form.Controls.Add(btnCancel);
             form.Controls.Add(btnOK);
             form.Controls.Add(listBox);
+            form.Controls.Add(label);
             form.ShowDialog(this);
         }
 
-        private void AddItemToCollection(TreeNode parentNode, System.Collections.IList collection, Type itemType)
+        private void AddNewConfigItem(Type configType)
         {
-            var newItem = Activator.CreateInstance(itemType);
-            if (newItem is BaseConfig bc)
+            try
             {
-                bc.AppName = $"{itemType.Name}_{collection.Count + 1}";
+                var newItem = Activator.CreateInstance(configType) as BaseConfig;
+                if (newItem != null)
+                {
+                    newItem.AppName = $"{configType.Name}_{_configItems.Count}";
+                    newItem.AppVersion = "1.0";
+                    _configItems.Add(newItem);
+                }
+
+                BuildListView();
+
+                // Select the newly added item
+                if (treeViewConfigs.Nodes.Count > 0)
+                {
+                    treeViewConfigs.SelectedNode = treeViewConfigs.Nodes[treeViewConfigs.Nodes.Count - 1];
+                }
+
+                MessageBox.Show($"New {configType.Name} added successfully. Configure its properties and save.", "Item Added");
             }
-
-            collection.Add(newItem);
-
-            var itemNode = new TreeNode(GetNodeDisplayName(newItem))
+            catch (Exception ex)
             {
-                Tag = new NodeData(ItemNodeTag, newItem, itemType)
-            };
-
-            parentNode.Nodes.Add(itemNode);
-            parentNode.Text = $"{parentNode.Text.Split(' ')[0]} ({collection.Count})";
-            treeViewConfigs.SelectedNode = parentNode;
-            parentNode.EnsureVisible();
-            treeViewConfigs.Focus();
+                MessageBox.Show($"Error creating new config item: {ex.Message}", "Error");
+            }
         }
 
         private void BtnRemoveItem_Click(object sender, EventArgs e)
         {
             if (treeViewConfigs.SelectedNode == null)
             {
-                MessageBox.Show("Please select an item to remove.");
+                MessageBox.Show("Please select a configuration item to remove.");
                 return;
             }
 
             var selectedNode = treeViewConfigs.SelectedNode;
-            if (selectedNode.Tag is not NodeData nodeData)
-                return;
-
-            // If removing a GeneralConfig item (top-level node with no parent)
-            if (selectedNode.Parent == null && nodeData.NodeType == GeneralConfigNodeTag)
+            if (selectedNode.Tag is not NodeData nodeData || nodeData.NodeType != ConfigItemNodeTag)
             {
-                var config = nodeData.Data as GeneralConfig;
-                if (config != null && _generalConfigs.Contains(config))
-                {
-                    _generalConfigs.Remove(config);
-                    BuildTreeView();
-                    panelPropertiesContainer.Controls.Clear();
-                    return;
-                }
+                MessageBox.Show("Please select a configuration item to remove.");
+                return;
             }
 
-            // If removing a collection item
-            if (nodeData.NodeType == ItemNodeTag)
+            var config = nodeData.Data as BaseConfig;
+            if (config == null)
+                return;
+
+            // Prevent deletion of InitialConfig
+            if (config is InitialConfig)
             {
-                var parentNode = selectedNode.Parent;
-                if (parentNode?.Tag is not NodeData parentNodeData || parentNodeData.NodeType != CollectionNodeTag)
-                    return;
+                MessageBox.Show("The InitialConfig item is system-managed and cannot be removed.", "Cannot Delete");
+                return;
+            }
 
-                var collection = parentNodeData.Data as System.Collections.IList;
-                if (collection == null)
-                    return;
+            // Confirm deletion
+            var result = MessageBox.Show(
+                $"Are you sure you want to remove '{config.AppName}'?",
+                "Confirm Removal",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
 
-                collection.Remove(nodeData.Data);
-                selectedNode.Remove();
-                parentNode.Text = $"{parentNode.Text.Split(' ')[0]} ({collection.Count})";
-
+            if (result == DialogResult.Yes)
+            {
+                _configItems.Remove(config);
+                BuildListView();
                 panelPropertiesContainer.Controls.Clear();
-                RefreshTreeView();
-                return;
-            }
-
-            MessageBox.Show("Please select an item to remove.");
-        }
-
-        private void RefreshTreeView()
-        {
-            var selectedNode = treeViewConfigs.SelectedNode;
-            var selectedData = selectedNode?.Tag;
-
-            // Refresh the count in parent collection nodes
-            if (selectedNode?.Parent?.Tag is NodeData parentNodeData && parentNodeData.NodeType == CollectionNodeTag)
-            {
-                var collection = parentNodeData.Data as System.Collections.IList;
-                if (collection != null)
-                {
-                    var collectionName = selectedNode.Parent.Text.Split(' ')[0];
-                    selectedNode.Parent.Text = $"{collectionName} ({collection.Count})";
-                }
+                MessageBox.Show("Item removed. Remember to save your changes to the database.", "Item Removed");
             }
         }
 
@@ -518,20 +399,13 @@ namespace ConfigEditor
                 btnSave.Enabled = false;
                 btnSave.Text = "Saving...";
 
-                // Debug: Check if FileMgmtConfigs have properties set
-                if (_generalConfigs.Count > 0 && _generalConfigs[0].FileMgmtConfigs.Count > 0)
+                // Save each config item individually
+                foreach (var config in _configItems)
                 {
-                    var firstConfig = _generalConfigs[0].FileMgmtConfigs[0];
-                    System.Diagnostics.Debug.WriteLine($"DEBUG: Before Save - Type: {firstConfig.GetType().Name}, FileName: {firstConfig.FileName}");
-                    if (firstConfig is CSVFileMgmtConfig csv)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"  CodeColumnName: {csv.CodeColumnName}, NameColumnName: {csv.NameColumnName}");
-                    }
+                    await _databaseService.SaveConfigItemAsync(config);
                 }
 
-                await _databaseService.SaveConfigsAsync(_generalConfigs);
-
-                MessageBox.Show("Configurations saved successfully to the database!", "Success");
+                MessageBox.Show("All configurations saved successfully to the database!", "Success");
                 btnSave.Text = "Save to Database";
             }
             catch (Exception ex)
