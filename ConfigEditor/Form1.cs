@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using System.ComponentModel.DataAnnotations;
 using Microsoft.Extensions.Configuration;
 
 namespace ConfigEditor
@@ -11,6 +12,7 @@ namespace ConfigEditor
         private Dictionary<string, Type> _configTypes;
         private ConfigDatabaseService _databaseService;
         private const string ConfigItemNodeTag = "ConfigItem";
+        private const string ChildObjectNodeTag = "ChildObject";
 
         public Form1()
         {
@@ -85,11 +87,45 @@ namespace ConfigEditor
                     Tag = new NodeData(ConfigItemNodeTag, config, config.GetType())
                 };
 
+                // Add child nodes for nested objects
+                AddChildNodes(configNode, config);
+
                 treeViewConfigs.Nodes.Add(configNode);
             }
 
             // Expand all nodes for better visibility
             treeViewConfigs.ExpandAll();
+        }
+
+        private void AddChildNodes(TreeNode parentNode, object parentObj)
+        {
+            if (parentObj == null)
+                return;
+
+            var type = parentObj.GetType();
+            var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0)
+                .ToList();
+
+            foreach (var prop in properties)
+            {
+                // Check if the property type is a custom config class (not primitive, string, or collection)
+                var propType = prop.PropertyType;
+                var underlyingType = Nullable.GetUnderlyingType(propType) ?? propType;
+
+                // Check if it's a custom class that could be a nested config
+                if (underlyingType.IsClass && underlyingType != typeof(string) &&
+                    (typeof(BaseConfig).IsAssignableFrom(underlyingType) ||
+                     (underlyingType.Name.Contains("Config") && !propType.IsGenericType)))
+                {
+                    var childNode = new TreeNode(prop.Name)
+                    {
+                        Tag = new NodeData(ChildObjectNodeTag, parentObj, prop)
+                    };
+
+                    parentNode.Nodes.Add(childNode);
+                }
+            }
         }
 
         private string GetNodeDisplayName(object obj)
@@ -106,6 +142,13 @@ namespace ConfigEditor
             if (e.Node.Tag is not NodeData nodeData)
                 return;
 
+            // Handle child object nodes
+            if (nodeData.NodeType == ChildObjectNodeTag)
+            {
+                HandleChildObjectSelection(nodeData);
+                return;
+            }
+
             _selectedObject = nodeData.Data;
 
             // Display properties for selected config item
@@ -116,6 +159,38 @@ namespace ConfigEditor
             else
             {
                 panelPropertiesContainer.Controls.Clear();
+            }
+        }
+
+        private void HandleChildObjectSelection(NodeData nodeData)
+        {
+            var parentObj = nodeData.Data;
+            var prop = nodeData.PropertyInfo;
+
+            if (prop == null)
+                return;
+
+            var childValue = prop.GetValue(parentObj);
+
+            panelPropertiesContainer.Controls.Clear();
+
+            if (childValue == null)
+            {
+                var messageLabel = new Label
+                {
+                    Text = "Click 'Add Item' to add an instance",
+                    Location = new Point(10, 10),
+                    AutoSize = true,
+                    ForeColor = Color.Gray,
+                    Font = new Font(Font, FontStyle.Italic)
+                };
+                panelPropertiesContainer.Controls.Add(messageLabel);
+                _selectedObject = null;
+            }
+            else
+            {
+                DisplayProperties(childValue);
+                _selectedObject = childValue;
             }
         }
 
@@ -147,10 +222,26 @@ namespace ConfigEditor
                     panelPropertiesContainer.Controls.Add(label);
                     yPosition += 25;
 
-                    Control editor = CreatePropertyEditor(obj, prop);
-                    editor.Location = new Point(10, yPosition);
-                    editor.Width = 400;
-                    panelPropertiesContainer.Controls.Add(editor);
+                    var editorControl = CreatePropertyEditor(obj, prop);
+                    editorControl.Location = new Point(10, yPosition);
+                    editorControl.Width = 400;
+                    panelPropertiesContainer.Controls.Add(editorControl);
+
+                    // Add validation error label to the right of the control in a separate column
+                    var errorLabel = new Label
+                    {
+                        Location = new Point(420, yPosition),
+                        AutoSize = false,
+                        Width = 200,
+                        Height = 50,
+                        ForeColor = Color.Red,
+                        Font = new Font(Font.FontFamily, Font.Size + 1, FontStyle.Regular),
+                        Visible = false,
+                        Tag = $"Error_{prop.Name}",
+                        TextAlign = ContentAlignment.TopLeft
+                    };
+                    panelPropertiesContainer.Controls.Add(errorLabel);
+
                     yPosition += 35;
                 }
                 catch (Exception ex)
@@ -182,6 +273,7 @@ namespace ConfigEditor
                 comboBox.SelectedIndexChanged += (s, e) =>
                 {
                     prop.SetValue(obj, comboBox.SelectedItem);
+                    ValidateProperty(obj, prop, panelPropertiesContainer);
                 };
 
                 return comboBox;
@@ -198,6 +290,7 @@ namespace ConfigEditor
                 dateTimePicker.ValueChanged += (s, e) =>
                 {
                     prop.SetValue(obj, dateTimePicker.Value);
+                    ValidateProperty(obj, prop, panelPropertiesContainer);
                 };
 
                 return dateTimePicker;
@@ -216,6 +309,7 @@ namespace ConfigEditor
                 numericUpDown.ValueChanged += (s, e) =>
                 {
                     prop.SetValue(obj, (int)numericUpDown.Value);
+                    ValidateProperty(obj, prop, panelPropertiesContainer);
                 };
 
                 return numericUpDown;
@@ -233,22 +327,125 @@ namespace ConfigEditor
                 textBox.TextChanged += (s, e) =>
                 {
                     prop.SetValue(obj, textBox.Text);
+                    ValidateProperty(obj, prop, panelPropertiesContainer);
                 };
 
                 return textBox;
             }
 
             // Default: TextBox for unknown types
-            return new TextBox
+            var defaultTextBox = new TextBox
             {
                 Height = 25,
                 Text = currentValue?.ToString() ?? ""
             };
+
+            defaultTextBox.TextChanged += (s, e) =>
+            {
+                ValidateProperty(obj, prop, panelPropertiesContainer);
+            };
+
+            return defaultTextBox;
+        }
+
+        private void ValidateProperty(object obj, PropertyInfo prop, Panel containerPanel)
+        {
+            var validationAttributes = prop.GetCustomAttributes<ValidationAttribute>().ToArray();
+
+            // If no validation attributes, hide error label and return
+            if (validationAttributes.Length == 0)
+            {
+                var errorLabel = containerPanel.Controls
+                    .OfType<Label>()
+                    .FirstOrDefault(l => l.Tag?.ToString() == $"Error_{prop.Name}");
+
+                if (errorLabel != null)
+                {
+                    errorLabel.Visible = false;
+                }
+                return;
+            }
+
+            var errorLabel2 = containerPanel.Controls
+                .OfType<Label>()
+                .FirstOrDefault(l => l.Tag?.ToString() == $"Error_{prop.Name}");
+
+            if (errorLabel2 == null)
+                return;
+
+            var value = prop.GetValue(obj);
+            var validationContext = new ValidationContext(obj) { MemberName = prop.Name };
+            var errorMessages = new List<string>();
+
+            // Check all validation attributes
+            foreach (var attribute in validationAttributes)
+            {
+                if (!attribute.IsValid(value))
+                {
+                    string errorMessage = attribute.ErrorMessage ?? $"{prop.Name} is invalid.";
+                    errorMessages.Add(errorMessage);
+                }
+            }
+
+            // Display all validation errors or clear if valid
+            if (errorMessages.Count > 0)
+            {
+                errorLabel2.Text = string.Join(Environment.NewLine, errorMessages);
+                errorLabel2.AutoSize = false;
+                errorLabel2.Height = 50;
+                errorLabel2.Visible = true;
+            }
+            else
+            {
+                errorLabel2.Visible = false;
+            }
         }
 
         private void BtnAddItem_Click(object sender, EventArgs e)
         {
+            // Check if a child object node is selected
+            if (treeViewConfigs.SelectedNode?.Tag is NodeData nodeData && nodeData.NodeType == ChildObjectNodeTag)
+            {
+                HandleAddChildObject(nodeData);
+                return;
+            }
+
             ShowConfigTypeSelectionDialog();
+        }
+
+        private void HandleAddChildObject(NodeData nodeData)
+        {
+            var parentObj = nodeData.Data;
+            var prop = nodeData.PropertyInfo;
+
+            if (prop == null)
+                return;
+
+            var propType = prop.PropertyType;
+            var underlyingType = Nullable.GetUnderlyingType(propType) ?? propType;
+
+            try
+            {
+                var childInstance = Activator.CreateInstance(underlyingType);
+                prop.SetValue(parentObj, childInstance);
+
+                // Rebuild tree and select the new child object
+                BuildListView();
+                treeViewConfigs.ExpandAll();
+
+                // Select the child node again
+                var childNode = treeViewConfigs.SelectedNode;
+                if (childNode != null)
+                {
+                    TreeViewConfigs_AfterSelect(null, new TreeViewEventArgs(childNode));
+                }
+
+                MessageBox.Show($"New {underlyingType.Name} instance added. Configure its properties.", "Item Added");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error adding child object: {ex.Message}", "Error");
+            }
         }
 
         private void ShowConfigTypeSelectionDialog()
@@ -359,7 +556,20 @@ namespace ConfigEditor
             }
 
             var selectedNode = treeViewConfigs.SelectedNode;
-            if (selectedNode.Tag is not NodeData nodeData || nodeData.NodeType != ConfigItemNodeTag)
+            if (selectedNode.Tag is not NodeData nodeData)
+            {
+                MessageBox.Show("Please select a configuration item to remove.");
+                return;
+            }
+
+            // Handle child object removal
+            if (nodeData.NodeType == ChildObjectNodeTag)
+            {
+                HandleRemoveChildObject(nodeData);
+                return;
+            }
+
+            if (nodeData.NodeType != ConfigItemNodeTag)
             {
                 MessageBox.Show("Please select a configuration item to remove.");
                 return;
@@ -392,31 +602,71 @@ namespace ConfigEditor
             }
         }
 
+        private void HandleRemoveChildObject(NodeData nodeData)
+        {
+            var parentObj = nodeData.Data;
+            var prop = nodeData.PropertyInfo;
+
+            if (prop == null)
+                return;
+
+            prop.SetValue(parentObj, null);
+            BuildListView();
+            panelPropertiesContainer.Controls.Clear();
+
+            var messageLabel = new Label
+            {
+                Text = "Child object removed. Click 'Add Item' to add a new instance.",
+                Location = new Point(10, 10),
+                AutoSize = true,
+                ForeColor = Color.Gray,
+                Font = new Font(Font, FontStyle.Italic)
+            };
+            panelPropertiesContainer.Controls.Add(messageLabel);
+
+            MessageBox.Show("Child object removed. Remember to save your changes to the database.", "Item Removed");
+        }
+
         private async void BtnSave_Click(object sender, EventArgs e)
         {
             try
             {
                 btnSave.Enabled = false;
                 btnSave.Text = "Saving...";
-
-                // Save each config item individually
-                foreach (var config in _configItems)
-                {
-                    await _databaseService.SaveConfigItemAsync(config);
-                }
-
-                MessageBox.Show("All configurations saved successfully to the database!", "Success");
-                btnSave.Text = "Save to Database";
+                await _databaseService.SaveConfigItemAsync(_configItems);
+                MessageBox.Show("Configuration saved to database successfully.", "Save Successful");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error saving configurations to database:\n{ex.Message}", "Error");
-                btnSave.Text = "Save to Database";
+                MessageBox.Show($"Error saving configuration: {ex.Message}", "Save Error");
             }
             finally
             {
                 btnSave.Enabled = true;
+                btnSave.Text = "Save to Database";
             }
+        }
+    }
+
+    public class NodeData
+    {
+        public string NodeType { get; set; }
+        public object Data { get; set; }
+        public Type DataType { get; set; }
+        public PropertyInfo? PropertyInfo { get; set; } = null;
+
+        public NodeData(string nodeType, object data, Type dataType)
+        {
+            NodeType = nodeType;
+            Data = data;
+            DataType = dataType;
+        }
+
+        public NodeData(string nodeType, object data, PropertyInfo propertyInfo)
+        {
+            NodeType = nodeType;
+            Data = data;
+            PropertyInfo = propertyInfo;
         }
     }
 }

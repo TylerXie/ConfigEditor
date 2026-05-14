@@ -10,6 +10,6 @@ namespace ConfigEditor
         public string CodeColumnName { get; set; } = string.Empty;
         public string NameColumnName { get; set; } = string.Empty;
         public string DescriptionColumnName { get; set; } = string.Empty;
-
+        public DatabaseMgmtConfig? DBMgmt { get; set; }
     }
 }

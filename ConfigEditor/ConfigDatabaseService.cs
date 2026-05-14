@@ -1,13 +1,9 @@
-using System;
-using System.Collections.Generic;
+using Microsoft.Extensions.Configuration;
 using System.Data.SqlClient;
-using System.Linq;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Configuration;
+using System.Xml;
 
 namespace ConfigEditor
 {
@@ -130,6 +126,30 @@ namespace ConfigEditor
             catch (Exception ex)
             {
                 throw new Exception($"Error saving config item to database: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Save multiple config items to the database.
+        /// </summary>
+        public async Task SaveConfigItemAsync(List<BaseConfig> configItems)
+        {
+            try
+            {
+                if (configItems == null || configItems.Count == 0)
+                {
+                    throw new ArgumentException("Configuration items list cannot be null or empty.");
+                }
+
+                // Save each config item individually
+                foreach (var configItem in configItems)
+                {
+                    await SaveConfigItemAsync(configItem);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to save configuration items to database: {ex.Message}", ex);
             }
         }
 
@@ -380,7 +400,7 @@ namespace ConfigEditor
             try
             {
                 var jsonArray = new StringBuilder();
-                jsonArray.Append("[");
+                jsonArray.Append("[");  
 
                 bool first = true;
                 foreach (var item in list)
