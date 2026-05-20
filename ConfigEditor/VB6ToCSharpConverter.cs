@@ -331,35 +331,244 @@ namespace ConfigEditor
             string originalLine = line;
             string trimmed = line.Trim();
 
-            // Skip empty lines and comments
+            // Skip empty lines
             if (string.IsNullOrWhiteSpace(trimmed))
                 return line;
 
+            // Convert comments
             if (trimmed.StartsWith("'"))
                 return line.Replace("'", "//");
 
-            // Convert assignments (=)
-            if (trimmed.Contains("=") && !trimmed.Contains("=="))
+            // Convert Dim statements to variable declarations
+            if (trimmed.StartsWith("Dim ", StringComparison.OrdinalIgnoreCase))
             {
-                // Be careful not to convert comparison operators
+                trimmed = ConvertDimStatement(trimmed);
+            }
+
+            // Convert If...Then statements
+            if (trimmed.StartsWith("If ", StringComparison.OrdinalIgnoreCase) && trimmed.Contains("Then"))
+            {
+                trimmed = ConvertIfStatement(trimmed);
+            }
+
+            // Convert ElseIf statements
+            if (trimmed.StartsWith("ElseIf ", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmed = ConvertElseIfStatement(trimmed);
+            }
+
+            // Convert Else statements
+            if (trimmed.Equals("Else", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmed = "else";
+            }
+
+            // Convert End If
+            if (trimmed.Equals("End If", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmed = "}";
+            }
+
+            // Convert Select Case statements
+            if (trimmed.StartsWith("Select Case ", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmed = ConvertSelectCaseStatement(trimmed);
+            }
+
+            // Convert Case statements
+            if (trimmed.StartsWith("Case ", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmed = ConvertCaseStatement(trimmed);
+            }
+
+            // Convert End Select
+            if (trimmed.Equals("End Select", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmed = "}";
             }
 
             // Convert string concatenation (&) to C# (+)
             trimmed = trimmed.Replace(" & ", " + ");
+            trimmed = Regex.Replace(trimmed, @"\&(?!\&)", " +"); // Handle &without spaces
 
             // Convert MsgBox to MessageBox
             trimmed = Regex.Replace(trimmed, @"\bMsgBox\b", "MessageBox.Show", RegexOptions.IgnoreCase);
 
-            // Add semicolon if missing and line doesn't end with {, }, or is incomplete
+            // Convert logical operators
+            trimmed = Regex.Replace(trimmed, @"\bAnd\b", "&&", RegexOptions.IgnoreCase);
+            trimmed = Regex.Replace(trimmed, @"\bOr\b", "||", RegexOptions.IgnoreCase);
+            trimmed = Regex.Replace(trimmed, @"\bNot\b", "!", RegexOptions.IgnoreCase);
+
+            // Convert comparison operators
+            trimmed = Regex.Replace(trimmed, @"\<\>", "!=");
+
+            // Add semicolon if missing and line doesn't end with {, }, :, or is incomplete
             if (!trimmed.EndsWith(";") && !trimmed.EndsWith("{") && !trimmed.EndsWith("}") && 
-                !trimmed.EndsWith(",") && !trimmed.EndsWith("(") && !trimmed.EndsWith("\\"))
+                !trimmed.EndsWith(":") && !trimmed.EndsWith(",") && !trimmed.EndsWith("(") && 
+                !trimmed.EndsWith("\\") && !trimmed.Equals("else", StringComparison.OrdinalIgnoreCase))
             {
-                trimmed += ";";
+                // Don't add semicolon to control structure keywords
+                if (!trimmed.Equals("else") && !trimmed.StartsWith("case ") && !trimmed.StartsWith("default:"))
+                {
+                    if (!trimmed.EndsWith(":"))
+                    {
+                        trimmed += ";";
+                    }
+                }
             }
 
             // Maintain original indentation
             int indentCount = line.Length - line.TrimStart().Length;
             return new string(' ', indentCount) + trimmed;
+        }
+
+        /// <summary>
+        /// Converts VB6 Dim statement to C# variable declaration.
+        /// Example: "Dim sProcName As String" → "string sProcName"
+        /// </summary>
+        private string ConvertDimStatement(string dimStatement)
+        {
+            // Remove "Dim " prefix
+            string declaration = Regex.Replace(dimStatement, @"^Dim\s+", "", RegexOptions.IgnoreCase).Trim();
+
+            // Handle array declarations: Dim x() As Integer → int[] x
+            if (declaration.Contains("(") && declaration.Contains(")"))
+            {
+                declaration = ConvertArrayDeclaration(declaration);
+            }
+            else
+            {
+                // Parse: name As Type
+                Match match = Regex.Match(declaration, @"^(\w+)\s+As\s+(.+)$", RegexOptions.IgnoreCase);
+                if (match.Success)
+                {
+                    string varName = match.Groups[1].Value;
+                    string vbType = match.Groups[2].Value.Trim();
+                    string csharpType = ConvertVBTypeToCSharp(vbType);
+                    declaration = $"{csharpType} {varName}";
+                }
+            }
+
+            return "public " + declaration;
+        }
+
+        /// <summary>
+        /// Converts VB6 array declarations to C# format.
+        /// Example: "x() As Integer" → "int[] x"
+        /// </summary>
+        private string ConvertArrayDeclaration(string arrayDecl)
+        {
+            Match match = Regex.Match(arrayDecl, @"^(\w+)\s*\([^\)]*\)\s+As\s+(.+)$", RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                string varName = match.Groups[1].Value;
+                string vbType = match.Groups[2].Value.Trim();
+                string csharpType = ConvertVBTypeToCSharp(vbType);
+                return $"{csharpType}[] {varName}";
+            }
+            return arrayDecl;
+        }
+
+        /// <summary>
+        /// Converts VB6 If...Then statement to C#.
+        /// Example: "If x = 1 Then" → "if (x == 1) {"
+        /// </summary>
+        private string ConvertIfStatement(string ifStatement)
+        {
+            // Remove "If " and " Then"
+            string condition = Regex.Replace(ifStatement, @"^If\s+", "", RegexOptions.IgnoreCase);
+            condition = Regex.Replace(condition, @"\s+Then\s*$", "", RegexOptions.IgnoreCase).Trim();
+
+            // Convert comparison operators
+            condition = ConvertCondition(condition);
+
+            return $"if ({condition})";
+
+            string ConvertCondition(string cond)
+            {
+                // Convert = to ==
+                cond = Regex.Replace(cond, @"([^<>!=])\s*=\s*([^=])", "$1 == $2");
+
+                // Convert <> to !=
+                cond = Regex.Replace(cond, @"\<\>", "!=");
+
+                // Convert And to &&
+                cond = Regex.Replace(cond, @"\bAnd\b", "&&", RegexOptions.IgnoreCase);
+
+                // Convert Or to ||
+                cond = Regex.Replace(cond, @"\bOr\b", "||", RegexOptions.IgnoreCase);
+
+                // Convert Not to !
+                cond = Regex.Replace(cond, @"\bNot\b", "!", RegexOptions.IgnoreCase);
+
+                return cond;
+            }
+        }
+
+        /// <summary>
+        /// Converts VB6 ElseIf statement to C#.
+        /// </summary>
+        private string ConvertElseIfStatement(string elseIfStatement)
+        {
+            // Remove "ElseIf " and " Then"
+            string condition = Regex.Replace(elseIfStatement, @"^ElseIf\s+", "", RegexOptions.IgnoreCase);
+            condition = Regex.Replace(condition, @"\s+Then\s*$", "", RegexOptions.IgnoreCase).Trim();
+
+            // Convert comparison operators
+            condition = Regex.Replace(condition, @"([^<>!=])\s*=\s*([^=])", "$1 == $2");
+            condition = Regex.Replace(condition, @"\<\>", "!=");
+            condition = Regex.Replace(condition, @"\bAnd\b", "&&", RegexOptions.IgnoreCase);
+            condition = Regex.Replace(condition, @"\bOr\b", "||", RegexOptions.IgnoreCase);
+            condition = Regex.Replace(condition, @"\bNot\b", "!", RegexOptions.IgnoreCase);
+
+            return $"else if ({condition})";
+        }
+
+        /// <summary>
+        /// Converts VB6 Select Case statement to C#.
+        /// Example: "Select Case x" → "switch (x) {"
+        /// </summary>
+        private string ConvertSelectCaseStatement(string selectStatement)
+        {
+            // Remove "Select Case " prefix
+            string variable = Regex.Replace(selectStatement, @"^Select\s+Case\s+", "", RegexOptions.IgnoreCase).Trim();
+            return $"switch ({variable})";
+
+            // Note: Opening brace should be added on next line in converted output
+        }
+
+        /// <summary>
+        /// Converts VB6 Case statement to C#.
+        /// Example: "Case 1" → "case 1:" or "Case Else" → "default:"
+        /// </summary>
+        private string ConvertCaseStatement(string caseStatement)
+        {
+            // Remove "Case " prefix
+            string caseValue = Regex.Replace(caseStatement, @"^Case\s+", "", RegexOptions.IgnoreCase).Trim();
+
+            // Handle "Case Else"
+            if (caseValue.Equals("Else", StringComparison.OrdinalIgnoreCase))
+            {
+                return "default:";
+            }
+
+            // Handle multiple cases: "Case 1, 2, 3"
+            if (caseValue.Contains(","))
+            {
+                var cases = caseValue.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(c => $"case {c.Trim()}:");
+                return string.Join(" ", cases);
+            }
+
+            // Handle range cases: "Case 1 To 10" (not standard C#, need to convert to multiple cases)
+            if (caseValue.Contains(" To "))
+            {
+                // For now, just convert as single case - user may need to manually adjust
+                caseValue = caseValue.Replace(" To ", " - ");
+                return $"case {caseValue}:";
+            }
+
+            return $"case {caseValue}:";
         }
 
         /// <summary>
